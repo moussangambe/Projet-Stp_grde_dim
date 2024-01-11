@@ -1,0 +1,509 @@
+---
+title: "Projet Statistique en grande dimension"
+author: "Moussa NGAMBE"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    latex_engine: lualatex
+    toc: yes
+    fig_caption: yes
+    number_sections: yes
+    keep_tex: yes
+---
+
+**Nom : KEITA**\
+**Prénom : Mahamadou Ousmane**\
+**Nom : NGAMBE**\
+**Prénom : Moussa**
+
+\newtheorem{question}{Question}
+\newtheorem{definition}{Definition}
+
+\newcommand{\Var}{\mbox{Var}}
+\newcommand{\Cov}{\mbox{Cov}}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,error=FALSE, message=FALSE)
+```
+
+# Introduction
+
+Dans ce projet, il est proposé d’analyser un jeu de données issues de mesures prises en différentes stations météorologiques durant l’année 2016 dans le nord-ouest de la France. Le but de projet est l’inférence d’un graphe de corrélation partielle entre certaines variables météorologiques à l’aide des outils d’estimation en grande dimension dans des modèles graphiques.
+
+Le jeu de données peut être téléchargé via ce lien : 
+
+https://filesender.renater.fr/?s=download&token=c340ba9b-164d-436d-ae41-dd35727dc18b
+
+**Description des données disponibles sur les stations de mesure**
+
+Sur l'année 2016, on observe des données d'apprentissage sur $p = 262$ stations météorologiques dont on dispose des coordonnées spatiales (latitude et longitude).
+
+Pour chaque station $1 \leq i \leq p$, on dispose des mesures suivantes :
+
+**Variables explicatives** : mesure de $q = 6$ variables $X_{ijt} = (X_{ijt}^{(k)})_{1 \leq k \leq q} \in \mathbb{R}^{q}$ pour la station $i$, le jour $j$  et l'heure $t \in \{0,\ldots,23 \}$ (variable ordonnée). Les mesures sont
+
+- 'ff' : *Vitesse du vent (en m/s)*
+- 't' : *Température (en Kelvin)*
+- 'td' : *Point de rosée (en Kelvin)*
+- 'hu' : *Humidité (en pourcentage)*
+- 'dd' : *Direction du vent (en degrés)*
+- 'precip' : *Cumul de pluie sur une heure (en ml)*
+
+**Objectif de travail**
+
+*  Pour une des 6 variables ci-dessus, créer une matrice X de taille n × p avec n = 366 (nombre de jours en 2016) dont chaque entrée X; est une statistique (par exemple la moyenne sur 24 heures) issue des observations journalières d'une de ces variables le jour i et pour la station j
+* Inférer à partir de la matrice X, un graphe de corrélation partielle entre les stations et le représenter sur une carte.
+
+**Choix de la variables d'intérêt**  
+
+Nous avons décidé d'utiliser comme variable d'intérêt **la vitesse du vent** dont nous prenons la mesure moyenne sur la jourée pour chaque station.  
+
+**Contruction d'un jeu de données en utlisant variable d'intérêt (la vittesse de vent) **   
+
+Nous allons construir maintenant la matrice X de taille **(n x p)** où les lignes correspondent aux journées (les observations), et les colonnes correspondent aux stations (les variables).  
+
+
+```{r, results='hide'}
+library(huge)
+library("Hmisc")
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(missMDA)
+library(rcompanion)
+library(readr)
+library(leaflet)
+library(igraph)
+
+
+# Lecture des données
+X_2016 = read.csv("/Users/moussangambe/Desktop/Master 2 MSS/UE Statistique en grande dimension/Projet/donnees/X_2016_final.csv")
+# Nombre de stations avec observations en 2016
+names_stations = unique(X_2016$number_sta)
+# Construction de la matrice des données
+liste_jours = sort(unique(X_2016$day))
+head(X_2016[,c("number_sta","day")])
+n=366
+p=262
+# Choix d'une variable
+k = 1
+nb_heures = 24
+# Matrice des données pour cette variable
+X = matrix(0,n,p)
+numero_station<-c()
+for (i in 1:n) {
+  print(i)
+  for (j in 1:p) {
+      pos = (X_2016[,"day"] == liste_jours[i]) & (X_2016[,"number_sta"] == names_stations[j])
+      if (any(pos)){
+      X[i,j] = mean(as.numeric(X_2016[pos,1+(nb_heures*(k-1)):(nb_heures*k-1)]),na.rm=TRUE)
+      numero_station[j]<-names_stations[j]
+      }
+  }
+}
+colnames(X)<-numero_station
+```
+```{r,results='hide'}
+setwd("/Users/moussangambe/Desktop/Master 2 MSS/UE Statistique en grande dimension/Projet/Finale")
+save("X", file = "X.RData")
+numero_station
+```
+
+**Gestion des valeurs manquantes**. 
+
+Dans notre matrice X, nous constatons que 43,63 % des données sont manquantes, ce qui représente une proportion significative. En observant ces valeurs manquantes, nous remarquons qu'il y a des stations qui n'ont enregistré aucune mesure tout au long de l'année. Pour traiter ces données manquantes, nous prévoyons de retirer ces stations, puis d'imputer le reste des valeurs manquantes en utilisant la moyenne des mesures pour chaque jour comme valeur de remplacement pour les stations qui n'ont pas enregistré de mesure pour une journée donnée.
+
+```{r}
+# Identification des colonnes avec toutes les valeurs manquantes
+del <- c()
+for (i in 1:ncol(X)){
+  if (sum(is.na(X[,i]))/nrow(X) == 1)
+    del <- c(del,i)
+}
+
+Xdel <- X[,-del]
+Xdel <- Xdel[, colSums(!is.finite(Xdel)) == 0]  # Retire les colonnes avec des valeurs manquantes ou infinies
+
+# Remplacer les valeurs manquantes par la moyenne de chaque colonne
+data <- apply(Xdel, 2, function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+#Xpca <- PCA(Xdel)
+#fviz_eig(Xpca, choice = "eigenvalue", addlabels=TRUE)
+#data <- imputePCA(Xdel, ncp = 5)
+
+```
+
+**Restriction dans le cas gaussien**   
+
+Les méthodes d'estimation du graphe d'indépendance conditionnelle sont principalement conçues pour le cas gaussien. Par conséquent, il est essentiel de s'assurer que la distribution du matrice $X$ est proche d'une loi normale, c'est-à-dire que $X$ doit suivre une distribution gaussienne N(μ, Σ). Pour mieux correspondre à cette hypothèse de distribution gaussienne, nous avons appliqué une transformation simple en remplaçant X par log(1 + X). Voici le résultat de cette transformation sous la forme d'un histogramme.
+
+```{r}
+X_gauss<-log(1 + data)
+plotNormalHistogram( X_gauss, prob = FALSE,
+                      main = "Distribution de la vitesse du vent",
+                      length = 1000 )
+                      
+```
+
+On remarque que avec notre transformation de la matrice $X$ en $log(1+X)$, la distribution de la vitesse du vent pour la  stations est très proche de la distribution d'une loi normale.
+
+
+## Estimation de graphe sans correction : 
+
+On chercher à tester si il existe une corrélation entre la station i et la station j. Pour cela on teste $H_0$ : $p_{ij} = 0$ vs $H_1$ : $p_{ij} \ne 0$
+On commence par calculer la statistique de test qui se définit par : $$\hat{t_{ij}}= \sqrt{n-p-2}\frac{\hat{p_{ij}}}{\sqrt[2]{1-\hat{p_{ij}}}}$$
+
+Avec $p_{ij} = \frac{-K_{ij}}{\sqrt{K_{ii}}*\sqrt{K_{jj}}}$ et $K = \Sigma^{-1}$ la matrice de précision de X et $\Sigma$ la matrice de covariance de X.
+
+Sous $H_0$ on a que $\hat{t_{ij}} \sim t(n-p-2)$
+
+On calcule ensuite les p-valeurs associées à chaque test. Pour commencer, nous comparerons ces p-valeurs à une valeur $\alpha = 5%$ que l'on fixe. Si la p-valeur est inférieur à ce seuil on rejetera $H_0$ et nous supposerons donc qu'il existe une corrélation entre la station i et j. Nous repetterons la procédure pour chaque stations.
+On peut visualiser ces liens sur la carte ci-dessous.
+
+```{r}
+p<-ncol(X_gauss)
+hatSigma = cov(X_gauss)
+hatSigma<-hatSigma + diag(x = 0.1,p,p)
+hatK = solve(hatSigma)
+
+D<-diag(hatK)
+hatP<- -hatK/sqrt(D%*%t(D))
+t = sqrt(n-p-2)*hatP/sqrt(1-hatP^2)
+pval = 2*(1-pt(abs(t),df = n-p-2))
+alpha <- 0.05
+ssc <-pval < alpha
+#(sum(ssc)-p)/2
+
+```
+
+```{r}
+stations_coordinates_all <- read_csv("/Users/moussangambe/Desktop/Master 2 MSS/UE Statistique en grande dimension/Projet/donnees/stations_coordinates.csv")
+names_stations = unique(X_2016$number_sta)
+pos= is.element(stations_coordinates_all$number_sta, colnames(ssc))
+#sum(pos)
+stations_coordinates = stations_coordinates_all[pos,] 
+
+
+
+
+rownames(ssc) <- colnames(ssc) <- as.matrix(stations_coordinates[,1])
+g <- graph_from_adjacency_matrix(t(ssc), weighted=TRUE) %>%
+  set_vertex_attr("longitude", value = as.matrix(stations_coordinates["lon"])) %>%
+  set_vertex_attr("latitude", value = as.matrix(stations_coordinates["lat"]))
+gg <- get.data.frame(g, "both")
+
+# Collection de tous les coornodonees à tracer 
+vert <- gg$vertices
+rownames(vert) <- vert$name
+
+# Importation de la collection des coornodonees dans le systeme de SpatialLines
+library(sp)
+coordinates(vert) <- ~longitude+latitude
+
+# Identifier les droites à tracer et les transferer en classe SpatialLines
+line <- function(i){
+  return(as(rbind(vert[vert$name == gg$edges[i, "from"], ], 
+                    vert[vert$name == gg$edges[i, "to"], ]), "SpatialLines")) # arrets
+}
+
+edges <- lapply(1:nrow(gg$edges), line)
+for (i in seq_along(edges)) {
+  edges[[i]] <- spChFIDs(edges[[i]], as.character(i))
+}
+edges <- do.call(rbind, edges)
+
+noloop <- gg$edges$from != gg$edges$to
+corrplot(ssc,title = "Estimation sans correction")
+```
+
+Nous remarquons que 17 liens seulement sont conservées. On peut visualiser ces liens sur la carte ci-dessous.
+
+```{r}
+# Visualisation
+N <-dim(ssc)[2]
+leaflet(vert[1:N,]) %>% addTiles() %>% 
+  addCircleMarkers(data = vert[1:N,])%>% 
+  addPolylines(data = edges[1:nrow(gg$edges),radius=0.05], 
+               weight = 5*gg$edges$weight)
+```
+
+# Correction de Bonferroni : 
+
+On reprend les p-valeurs calculer plus haut mais cette fois-ci nous n'utilisons plus comme seuil notre $\alpha$ egale à 5% mais $\frac{\alpha}{Nombre-de-tests}$ avec Nombre-de-tests = $(p^2-p)/2$.
+
+```{r}
+seuil <- alpha/2
+d<-dim(pval)[2]
+acc<-pval < seuil
+acc<-as.matrix(acc,nrow=d,ncol=d)
+corrplot(acc,title = "Estimation par Bonferroni")
+```
+```{r}
+rownames(acc) <- colnames(acc) <- as.matrix(stations_coordinates[,1])
+g <- graph_from_adjacency_matrix(t(acc), weighted=TRUE) %>%
+  set_vertex_attr("longitude", value = as.matrix(stations_coordinates["lon"])) %>%
+  set_vertex_attr("latitude", value = as.matrix(stations_coordinates["lat"]))
+gg <- get.data.frame(g, "both")
+
+# Collection de tous les coornodonees à tracer 
+vert <- gg$vertices
+rownames(vert) <- vert$name
+
+# Importation de la collection des coornodonees dans le systeme de SpatialLines
+library(sp)
+coordinates(vert) <- ~longitude+latitude
+
+# Identifier les droites à tracer et les transferer en classe SpatialLines
+line <- function(i){
+  return(as(rbind(vert[vert$name == gg$edges[i, "from"], ], 
+                    vert[vert$name == gg$edges[i, "to"], ]), "SpatialLines")) # arrets
+}
+
+edges <- lapply(1:nrow(gg$edges), line)
+for (i in seq_along(edges)) {
+  edges[[i]] <- spChFIDs(edges[[i]], as.character(i))
+}
+edges <- do.call(rbind, edges)
+
+noloop <- gg$edges$from != gg$edges$to
+#(sum(acc)-p)/2
+```
+
+Avec la correction de Bonferroni nous obtenons que 14 liens entre les stations. Nous pouvons observer ces liens sur la carte ci-dessous.
+
+```{r}
+# Visualisation
+N <-dim(acc)[2]
+leaflet(vert[1:N,]) %>% addTiles() %>% 
+  addCircleMarkers(data = vert[1:N,])%>% 
+  addPolylines(data = edges[1:nrow(gg$edges),radius=0.05], 
+               weight = 5*gg$edges$weight)
+```
+
+# Graphical-LASSO :
+
+Soit $\hat{K}_{\lambda}(K)$ la fonctionnelle à minimiser, ona :
+
+$$\hat{K}_{\lambda}=argmin_{K \in S^+_p}-\frac{n}{2}log(det(K))+\frac{n}{2}<K,\hat{\Sigma}_n>_F+\lambda\sum_{i\neq j}|K_{ij}|$$
+Dans cette section, nous avons employé la méthode GLASSO à l'aide de la bibliothèque "huge". Initialement, nous avons laissé la fonction déterminer le paramètre lambda optimal.
+
+```{r,eval=FALSE}
+glasso.res<-huge(data,method="glasso",nlambda = 100)
+glasso.res.select = huge.select(glasso.res,criterion="stars")
+```
+
+
+```{r,eval=FALSE,include=FALSE}
+save("glasso.res",file = "glasso.res.RData")
+save("glasso.res.select",file = "glasso.res.select.RData")
+```
+
+
+```{r,include=FALSE}
+load("glasso.res.RData")
+```
+
+```{r,include=FALSE}
+load("glasso.res.select.RData")
+```
+
+```{r,echo=FALSE,eval=FALSE}
+glasso.res$lambda
+glasso.res$sparsity*((p^2-p)/2)
+#glasso.res.select = huge.select(glasso.res,criterion="stars")
+```
+
+
+```{r}
+k = glasso.res.select$opt.index
+hatA_LASSO = glasso.res$path[[k]]
+corrplot(diag(p)+hatA_LASSO,title = "Graphical Lasso")
+```
+
+
+```{r,include=FALSE}
+# Obtention du data.frame d'information sur les somments et les arretes du graphe
+#rownames(hatA_LASSO) <- colnames(hatA_LASSO) <- as.matrix(stations_coordinates[-del,1])
+rownames(hatA_LASSO) <- colnames(hatA_LASSO) <- as.matrix(stations_coordinates[,1])
+g <- graph_from_adjacency_matrix(t(hatA_LASSO), weighted=TRUE) %>%
+  set_vertex_attr("longitude", value = as.matrix(stations_coordinates["lon"])) %>%
+  set_vertex_attr("latitude", value = as.matrix(stations_coordinates["lat"]))
+gg <- get.data.frame(g, "both")
+
+# Collection de tous les coornodonees à tracer 
+vert <- gg$vertices
+rownames(vert) <- vert$name
+
+# Importation de la collection des coornodonees dans le systeme de SpatialLines
+library(sp)
+coordinates(vert) <- ~longitude+latitude
+
+# Identifier les droites à tracer et les transferer en classe SpatialLines
+line <- function(i){
+  return(as(rbind(vert[vert$name == gg$edges[i, "from"], ], 
+                    vert[vert$name == gg$edges[i, "to"], ]), "SpatialLines")) # arrets
+}
+
+edges <- lapply(1:nrow(gg$edges), line)
+for (i in seq_along(edges)) {
+  edges[[i]] <- spChFIDs(edges[[i]], as.character(i))
+}
+edges <- do.call(rbind, edges)
+
+noloop <- gg$edges$from != gg$edges$to
+```
+
+On peut observer ces liens sur la cartes ci-dessous.
+
+```{r,echo=FALSE}
+# Visualisation
+N <-dim(hatA_LASSO)[2]
+leaflet(vert[1:N,]) %>% addTiles() %>% 
+  addCircleMarkers(data = vert[1:N,])%>% 
+  addPolylines(data = edges[1:nrow(gg$edges),radius=0.05], 
+               weight = 5*gg$edges$weight)
+```
+
+Nous observons une parcimonie élevée, rendant le graphique associé difficile à interpréter en raison du grand nombre de liens entre les stations
+
+# Procédure de Benjamini Hochberg
+
+```{r}
+H = as.vector(as.numeric(abs(hatP)))
+alpha_FDR = 0.05
+pvalY<-pval
+p = ncol(acc)
+m = p*p
+grid_alphaY = 1:m/m
+grid_c_alphaY = qnorm(1-grid_alphaY/2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+pvalvecY <- as.vector(pvalY)
+sort_pvalY <- sort(pvalvecY)
+```
+
+
+
+
+```{r}
+m1 <- 2000
+plot(1:m1,sort_pvalY[1:m1])
+lines(1:m1,alpha*rep(1,m1),col='green',lwd=2)
+lines(1:m1,grid_alphaY[1:m1]*alpha_FDR,type="l",col = "red")
+lines(1:m1,seuil*rep(1,m1),type="l",col = "blue")
+legend("topleft",col = c("black","green","red","blue"), legend = c("P-valeur","5%","grid_c_alpha*alpha_FDR","Bonferroni"),lty = 1)
+```
+
+```{r}
+hat_LY = sum(sort_pvalY <= alpha_FDR*grid_alphaY)
+hat_LY
+```
+
+```{r}
+
+acc2Y<-pvalY < alpha_FDR*grid_alphaY
+acc2Y<-as.matrix(acc2Y,nrow=p,ncol=p)
+corrplot(acc2Y,title = "Estimation par FDR")
+```
+
+
+
+La procédure de Benjamini Hochberg met en avant 8 corrélations entre les stations météos.
+
+```{r,include=FALSE}
+# Obtention du data.frame d'information sur les somments et les arretes du graphe
+#rownames(hatA_LASSO) <- colnames(hatA_LASSO) <- as.matrix(stations_coordinates[-del,1])
+rownames(acc2Y) <- colnames(acc2Y) <- as.matrix(stations_coordinates[,1])
+g <- graph_from_adjacency_matrix(t(acc2Y), weighted=TRUE) %>%
+  set_vertex_attr("longitude", value = as.matrix(stations_coordinates["lon"])) %>%
+  set_vertex_attr("latitude", value = as.matrix(stations_coordinates["lat"]))
+gg <- get.data.frame(g, "both")
+
+# Collection de tous les coornodonees à tracer 
+vert <- gg$vertices
+rownames(vert) <- vert$name
+
+# Importation de la collection des coornodonees dans le systeme de SpatialLines
+library(sp)
+coordinates(vert) <- ~longitude+latitude
+
+# Identifier les droites à tracer et les transferer en classe SpatialLines
+line <- function(i){
+  return(as(rbind(vert[vert$name == gg$edges[i, "from"], ], 
+                    vert[vert$name == gg$edges[i, "to"], ]), "SpatialLines")) # arrets
+}
+
+edges <- lapply(1:nrow(gg$edges), line)
+for (i in seq_along(edges)) {
+  edges[[i]] <- spChFIDs(edges[[i]], as.character(i))
+}
+edges <- do.call(rbind, edges)
+
+noloop <- gg$edges$from != gg$edges$to
+```
+
+On peut observer ces liens sur la cartes ci-dessous.
+
+```{r echo=TRUE}
+# Visualisation
+N <-p  #dim(acc)[1]
+leaflet(vert[1:N,]) %>% addTiles() %>% 
+  addCircleMarkers(data = vert[1:N,])%>% 
+  addPolylines(data = edges[1:nrow(gg$edges),radius=0.05], 
+               weight = 5*gg$edges$weight)
+```
+
+
+
+
+
+**Conclusion** : 
+
+Dans ce projet, nous avons appliqué plusieurs méthodes d'analyse, dont les "tests individuels au seuil $\alpha$", la "correction de Bonferroni", la "procédure de Benjamini-Hochberg" et "GLASSO". Lors de l'évaluation des résultats générés par ces méthodes, nous avons observé la présence occasionnelle de liens similaires entre certaines stations, renforçant ainsi la validité de ces connexions. Cependant, dans l'ensemble, il a été difficile d'extraire des similitudes cohérentes entre les résultats de ces différentes méthodes.
